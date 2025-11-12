@@ -78,3 +78,20 @@ speech, err := webrtcvad.Process(vad, 16000, frame, frameLength)
 ```
 
 See the binaries under `cmd/` for complete, runnable examples.
+
+### Run my Application:
+
+STEP:1 -> Navigate to the Folder
+```
+cd/cmd/realtime_gemini
+```
+
+STEP:2 -> Build the GO
+```
+go build -o main.exe main.go
+```
+
+STEP:3 -> Run the Application
+```
+.\main.exe -key "API-KEY"
+```
