@@ -19,11 +19,11 @@ func main() {
 	var filename string
 	if flag.NArg() < 1 {
 		// Try to find test file in parent/test directory
-		defaultPath := "../test/test2.wav"
+		defaultPath := "../../test/test2.wav"
 		if _, err := os.Stat(defaultPath); err == nil {
 			filename = defaultPath
 		} else {
-			log.Fatal("usage: example [infile.wav] or place test.wav in ../test/ directory")
+			log.Fatal("usage: go run ./cmd/offline_vad [infile.wav] or place test.wav in test/ directory")
 		}
 	} else {
 		filename = flag.Arg(0)
@@ -38,6 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	wavReader, err := wav.NewReader(file, info.Size())
 	if err != nil {

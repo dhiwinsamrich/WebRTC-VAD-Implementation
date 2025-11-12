@@ -45,6 +45,7 @@ func main() {
 	model := flag.String("model", "gemini-2.0-flash", "Gemini model name")
 	duration := flag.Int("duration", 10, "Recording duration in seconds")
 	debug := flag.Bool("debug", false, "Enable debug output")
+	liveOutput := flag.Bool("live", true, "Show streaming transcription while recording")
 	flag.Parse()
 
 	// Get API key
@@ -144,7 +145,7 @@ func main() {
 	}
 	defer cmd.Process.Kill()
 
-	// Audio buffer for recording
+	// Audio buffers for recording
 	var (
 		audioBuffer       []byte
 		liveBuffer        []byte
@@ -166,7 +167,7 @@ func main() {
 		frame := make([]byte, frameBytes)
 
 		if *debug {
-			fmt.Println("✅ Recording started...\n")
+			fmt.Println("✅ Recording started...")
 		}
 
 		for {
@@ -211,30 +212,32 @@ func main() {
 			sendLive := false
 			var liveChunk []byte
 
-			if frameActive || len(liveBuffer) > 0 {
+			if *liveOutput && (frameActive || len(liveBuffer) > 0) {
 				liveBuffer = append(liveBuffer, frame...)
 			}
 
-			intervalDuration := time.Duration(liveUpdateInterval) * time.Millisecond
-			silenceDuration := time.Duration(maxSilenceTime) * time.Millisecond
+			if *liveOutput {
+				intervalDuration := time.Duration(liveUpdateInterval) * time.Millisecond
+				silenceDuration := time.Duration(maxSilenceTime) * time.Millisecond
 
-			if len(liveBuffer) >= liveChunkSize && !liveProcessing {
-				sendLive = true
-			} else if !liveProcessing && len(liveBuffer) >= 4000 {
-				if lastLiveSend.IsZero() || now.Sub(lastLiveSend) >= intervalDuration {
+				if len(liveBuffer) >= liveChunkSize && !liveProcessing {
+					sendLive = true
+				} else if !liveProcessing && len(liveBuffer) >= 4000 {
+					if lastLiveSend.IsZero() || now.Sub(lastLiveSend) >= intervalDuration {
+						sendLive = true
+					}
+				}
+
+				if !liveProcessing && !frameActive && !lastSpeechTime.IsZero() && now.Sub(lastSpeechTime) >= silenceDuration && len(liveBuffer) >= minAudioSize {
 					sendLive = true
 				}
-			}
 
-			if !liveProcessing && !frameActive && !lastSpeechTime.IsZero() && now.Sub(lastSpeechTime) >= silenceDuration && len(liveBuffer) >= minAudioSize {
-				sendLive = true
-			}
-
-			if sendLive && len(liveBuffer) > 0 && !liveProcessing {
-				liveChunk = append([]byte(nil), liveBuffer...)
-				liveBuffer = liveBuffer[:0]
-				liveProcessing = true
-				lastLiveSend = now
+				if sendLive && len(liveBuffer) > 0 && !liveProcessing {
+					liveChunk = append([]byte(nil), liveBuffer...)
+					liveBuffer = liveBuffer[:0]
+					liveProcessing = true
+					lastLiveSend = now
+				}
 			}
 
 			bufferMutex.Unlock()
@@ -243,7 +246,7 @@ func main() {
 				liveWG.Add(1)
 				go func(data []byte) {
 					defer liveWG.Done()
-					processAudioLive(ctx, client, data, *language, *model, true, &currentTranscript)
+					processAudioLive(ctx, client, data, *language, *model, true, &currentTranscript, *liveOutput)
 					bufferMutex.Lock()
 					liveProcessing = false
 					bufferMutex.Unlock()
@@ -259,10 +262,12 @@ func main() {
 				}
 			}
 
-			if frameActive {
-				fmt.Print("🎤")
-			} else {
-				fmt.Print(".")
+			if *liveOutput {
+				if frameActive {
+					fmt.Print("🎤")
+				} else {
+					fmt.Print(".")
+				}
 			}
 		}
 	}()
@@ -276,7 +281,7 @@ func main() {
 	// Flush any remaining live buffer
 	bufferMutex.Lock()
 	var tailChunk []byte
-	if !liveProcessing && len(liveBuffer) >= 4000 {
+	if *liveOutput && !liveProcessing && len(liveBuffer) >= 4000 {
 		tailChunk = append([]byte(nil), liveBuffer...)
 		liveBuffer = liveBuffer[:0]
 		liveProcessing = true
@@ -288,7 +293,7 @@ func main() {
 		liveWG.Add(1)
 		go func(data []byte) {
 			defer liveWG.Done()
-			processAudioLive(ctx, client, data, *language, *model, true, &currentTranscript)
+			processAudioLive(ctx, client, data, *language, *model, true, &currentTranscript, *liveOutput)
 			bufferMutex.Lock()
 			liveProcessing = false
 			bufferMutex.Unlock()
@@ -309,20 +314,20 @@ func main() {
 	bufferMutex.Unlock()
 
 	// Move live transcript to a new line before final result
-	if currentTranscript != "" {
+	if *liveOutput && currentTranscript != "" {
 		fmt.Println()
 	}
 
 	// Transcribe the complete recording
 	if len(finalAudio) >= minAudioSize {
 		if *debug {
-			fmt.Println("📤 Sending audio to Gemini for transcription...\n")
+			fmt.Println("📤 Sending audio to Gemini for transcription...")
 		}
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func(data []byte) {
 			defer wg.Done()
-			processAudioLive(ctx, client, data, *language, *model, false, nil)
+			processAudioLive(ctx, client, data, *language, *model, false, nil, *liveOutput)
 		}(finalAudio)
 		wg.Wait()
 	} else {
@@ -333,7 +338,7 @@ func main() {
 }
 
 // processAudioLive sends audio to Gemini API for transcription
-func processAudioLive(ctx context.Context, client *genai.Client, audioData []byte, language, modelName string, isLive bool, currentTranscript *string) {
+func processAudioLive(ctx context.Context, client *genai.Client, audioData []byte, language, modelName string, isLive bool, currentTranscript *string, showOutput bool) {
 	if len(audioData) < minAudioSize && !isLive {
 		return
 	}
@@ -455,13 +460,19 @@ func processAudioLive(ctx context.Context, client *genai.Client, audioData []byt
 		// Live update - append to current transcript
 		newTranscript := strings.TrimSpace(*currentTranscript + " " + transcript)
 		*currentTranscript = newTranscript
-		// Clear line and show live transcript (with padding to clear previous text)
-		fmt.Printf("\r🔴 LIVE: %-80s", newTranscript)
+		if showOutput {
+			// Clear line and show live transcript (with padding to clear previous text)
+			fmt.Printf("\r🔴 LIVE: %-80s", newTranscript)
+		}
 	} else {
 		// Final transcript - show only the text
 		if currentTranscript != nil && *currentTranscript != "" {
 			finalText := *currentTranscript
-			fmt.Println(strings.TrimSpace(finalText))
+			if showOutput {
+				fmt.Println(strings.TrimSpace(finalText))
+			} else {
+				fmt.Println(strings.TrimSpace(finalText))
+			}
 			*currentTranscript = ""
 		} else {
 			fmt.Println(strings.TrimSpace(transcript))

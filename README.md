@@ -14,98 +14,67 @@ The WebRTC source code download form [WebRTC lkgr commit [8e55dca89f4e39241f9e3e
 go get github.com/baabaaox/go-webrtcvad
 ```
 
-## Example
+## Project layout
+
+```
+.
+├── cmd/
+│   ├── offline_vad/          # Analyse recorded WAV files with the Go binding
+│   └── realtime_gemini/      # Live transcription with WebRTC VAD + Gemini
+├── example/voicebot/         # Larger voicebot reference implementation
+├── test/                     # Sample audio clips for quick experiments
+├── vad.go                    # Go binding to the WebRTC VAD C library
+└── vad_test.go               # Binding smoke tests
+```
+
+The binaries under `cmd/` are intentionally tiny and showcase different ways to consume the binding. Feel free to copy them into your own projects as a starting point.
+
+## Usage
+
+### Offline analysis
+
+```
+go run ./cmd/offline_vad ./test/test2.wav
+```
+
+This loads a WAV file, keeps only the left channel (if stereo), resamples when necessary, and prints when speech is detected.
+
+### Real-time Gemini transcription
+
+```
+export GEMINI_API_KEY=your-key
+go run ./cmd/realtime_gemini -mic "audio=Microphone Array (Realtek(R) Audio)" -duration 15
+```
+
+You can disable the streaming preview if you only want the final transcript:
+
+```
+go run ./cmd/realtime_gemini -live=false
+```
+
+Flags available:
+
+- `-mic` – exact DirectShow microphone name (run `ffmpeg -list_devices true -f dshow -i dummy` to inspect)
+- `-lang` – Gemini language hint (defaults to `en`)
+- `-model` – Gemini model (`gemini-2.0-flash` by default)
+- `-duration` – recording length in seconds
+- `-debug` – verbose progress output
+- `-live` – enable or disable streaming transcripts while recording
+
+### Library import
+
+If you only need the VAD binding, add the module to your `go.mod` and call the package directly:
 
 ```go
-package main
-
-import (
-	"bytes"
-	"encoding/binary"
-	"io"
-	"log"
-	"os"
-	"github.com/baabaaox/go-webrtcvad"
-)
-
-const (
-	// VadMode vad mode
-	VadMode = 0
-	// SampleRate sample rate
-	SampleRate = 16000
-	// BitDepth bit depth
-	BitDepth = 16
-	// FrameDuration frame duration
-	FrameDuration = 20
-)
-
-var (
-	frameIndex  = 0
-	frameSize   = SampleRate / 1000 * FrameDuration
-	frameBuffer = make([]byte, SampleRate/1000*FrameDuration*BitDepth/8)
-	frameActive = false
-)
-
-func pcm2wav(pcmBuffer []byte, file string) (err error) {
-	wavBuffer := &bytes.Buffer{}
-	// RIFF chunk
-	wavBuffer.Write([]byte("RIFF"))
-	binary.Write(wavBuffer, binary.LittleEndian, uint32(36+len(pcmBuffer)))
-	wavBuffer.Write([]byte("WAVE"))
-	// fmt chunk
-	wavBuffer.Write([]byte("fmt "))
-	binary.Write(wavBuffer, binary.LittleEndian, uint32(16))
-	binary.Write(wavBuffer, binary.LittleEndian, uint16(1))
-	binary.Write(wavBuffer, binary.LittleEndian, uint16(1))
-	binary.Write(wavBuffer, binary.LittleEndian, uint32(16000))
-	binary.Write(wavBuffer, binary.LittleEndian, uint32(1*16000*16/8))
-	binary.Write(wavBuffer, binary.LittleEndian, uint16(1*16/8))
-	binary.Write(wavBuffer, binary.LittleEndian, uint16(16))
-	// data chunk
-	wavBuffer.Write([]byte("data"))
-	binary.Write(wavBuffer, binary.LittleEndian, uint32(len(pcmBuffer)))
-	wavBuffer.Write(pcmBuffer)
-	err = os.WriteFile(file, wavBuffer.Bytes(), 0777)
-	return
+vad := webrtcvad.Create()
+defer webrtcvad.Free(vad)
+if err := webrtcvad.Init(vad); err != nil {
+	log.Fatal(err)
 }
-
-func main() {
-	// ffmpeg -y -i test.mp4 -acodec pcm_s16le -f s16le -ac 1 -ar 16000 test.pcm
-	// ffmpeg -y -i test.mp3 -acodec pcm_s16le -f s16le -ac 1 -ar 16000 test.pcm
-	audioFile, err := os.Open("test.pcm")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer audioFile.Close()
-	vadInst := webrtcvad.Create()
-	defer webrtcvad.Free(vadInst)
-	webrtcvad.Init(vadInst)
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = webrtcvad.SetMode(vadInst, VadMode)
-	if err != nil {
-		log.Fatal(err)
-	}
-	chunkBuffer := &bytes.Buffer{}
-	for {
-		_, err = audioFile.Read(frameBuffer)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return
-		}
-		frameActive, err = webrtcvad.Process(vadInst, SampleRate, frameBuffer, frameSize)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if frameActive {
-			chunkBuffer.Write(frameBuffer)
-		}
-		log.Printf("Frame: %v, Active: %v", frameIndex, frameActive)
-		frameIndex++
-	}
-	pcm2wav(chunkBuffer.Bytes(), "test.wav")
+if err := webrtcvad.SetMode(vad, 2); err != nil {
+	log.Fatal(err)
 }
+speech, err := webrtcvad.Process(vad, 16000, frame, frameLength)
 ```
+
+See the binaries under `cmd/` for complete, runnable examples.
